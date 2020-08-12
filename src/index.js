@@ -50,7 +50,7 @@ export default ({mongoUri, amqpUri}) => {
     await client.close();
 
     return {
-      status: statuses.pendingHarvest,
+      status: statuses.harvestPending,
       ...formatDoc(),
       timestamp: doc.timestamp ? moment(doc.timestamp) : undefined
     };
