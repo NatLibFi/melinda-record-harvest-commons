@@ -32,8 +32,10 @@ import {MongoClient} from 'mongodb';
 import {connect as amqpConnect} from 'amqplib';
 
 export const statuses = {
-  pending: 'pending',
-  done: 'done'
+  harvestPending: 'harvestPending',
+  harvestDone: 'harvestDone',
+  harvestError: 'harvestError',
+  postProcessingDone: 'postProcessingDone'
 };
 
 export default ({mongoUri, amqpUri}) => {
@@ -48,10 +50,16 @@ export default ({mongoUri, amqpUri}) => {
     await client.close();
 
     return {
-      status: statuses.pending,
-      ...doc,
+      status: statuses.pendingHarvest,
+      ...formatDoc(),
       timestamp: doc.timestamp ? moment(doc.timestamp) : undefined
     };
+
+    function formatDoc() {
+      return Object.entries(doc).
+        filter(([k]) => k === '_id' === false)
+        .reduce((a, [k, v]) => ({...a, [k]: v}), {});
+    }
   }
 
   async function writeState(state, records = []) {
