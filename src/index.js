@@ -71,7 +71,7 @@ export default ({mongoUri, amqpUri}) => {
 
     await queueRecords(records.slice(), records.length);
 
-    const {messageCount: totalTempMessageCount} = await channel.checkQueue('records-temp', {durable: true});
+    const {messageCount: totalTempMessageCount} = await channel.checkQueue('records-temp');
 
     const timestamp = moment();
     const {client, db} = await getMongoClient();
@@ -85,9 +85,14 @@ export default ({mongoUri, amqpUri}) => {
 
     if (records.length > 0) {
       debug('Requeuing temp records');
+
       await handleTemporaryRecords({channel, timestamp, totalMessageCount: totalTempMessageCount});
+      const {messageCount} = await channel.checkQueue('records');
+
       await channel.close();
-      return connection.close();
+      await connection.close();
+
+      return messageCount;
     }
 
     await channel.close();
@@ -105,8 +110,6 @@ export default ({mongoUri, amqpUri}) => {
           persistent: true,
           timestamp: timestamp.valueOf()
         });
-
-        //await sendMessage({channel, content, queue: 'records-temp', timestamp: timestamp.valueOf()});
 
         return queueRecords(records.slice(1), totalCount, timestamp);
       }
@@ -143,8 +146,6 @@ export default ({mongoUri, amqpUri}) => {
           channel.sendToQueue('records', message.content, {persistent: true}, e => e ? reject(e) : resolve());
         });
 
-        //await sendMessage({channel, queue: 'records', content: message.content});
-
         await channel.ack(message);
         return handleTemporaryRecords({channel, totalMessageCount, timestamp, discardedMessageCount, forwardedMessageCount: forwardedMessageCount + 1});
       }
@@ -155,52 +156,6 @@ export default ({mongoUri, amqpUri}) => {
 
     return {discardedMessageCount, forwardedMessageCount};
   }
-
-  /*function sendMessage({channel, queue, content, ...options}) {
-    return new Promise((resolve, reject) => {
-      channel.sendToQueue(queue, content, {
-        ...options, persistent: true
-      }, err => err ? reject(err) : resolve());
-    });
-  }*/
-
-  /* Async function getRecords() {
-    const {timestamp: stateTimestamp} = await readState();
-    const connection = await amqpConnect(amqpUri);
-    const channel = await connection.createChannel();
-
-    await channel.assertQueue('records', {durable: true});
-
-    const emitter = new class extends EventEmitter {}();
-    consume();
-    return emitter;
-
-    function consume() {
-      channel.consume(activeQueue, message => {
-        const {messageTimestamp, record} = parse();
-
-        if (moment(messageTimestamp).isAfter(stateTimestamp)) {
-          emitter.removeAllListeners('record');
-          emitter.removeAllListeners('end');
-          emitter.emit('error', new Error('Message is newer than state'));
-          channel.nack(message);
-          return;
-        }
-
-        const {ack} = channel;
-        emitter.emit('record', {record, ack});
-
-        function parse() {
-          const {content, properties: {timestamp}} = mesage;
-          const recordObj = JSON.parse(content.toString());
-          return {
-            messageTimestamp: moment(timestamp),
-            record: new MarcRecord(recordObj, {subfieldValues: false, subfields: false})
-          };
-        }
-      });
-    }
-  }*/
 
   async function getMongoClient() {
     const client = new MongoClient(mongoUri, {useUnifiedTopology: true});
