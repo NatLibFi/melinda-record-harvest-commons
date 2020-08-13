@@ -67,9 +67,11 @@ export default ({mongoUri, amqpUri}) => {
     const channel = await connection.createConfirmChannel();
 
     await channel.assertQueue('records', {durable: true});
-    const {messageCount: totalTempMessageCount} = await channel.assertQueue('records-temp', {durable: true});
+    await channel.assertQueue('records-temp', {durable: true});
 
     await queueRecords(records.slice(), records.length);
+
+    const {messageCount: totalTempMessageCount} = await channel.checkQueue('records-temp', {durable: true});
 
     const timestamp = moment();
     const {client, db} = await getMongoClient();
@@ -98,9 +100,18 @@ export default ({mongoUri, amqpUri}) => {
         debug(`Sending record ${totalCount - records.length}/${totalCount} to temporary queue`);
 
         const content = Buffer.from(JSON.stringify(record.toObject()));
-        await sendMessage({channel, content, queue: 'records-temp', timestamp: timestamp.valueOf()});
+
+        await channel.sendToQueue('records-temp', content, {
+          persistent: true,
+          timestamp: timestamp.valueOf()
+        });
+
+        //await sendMessage({channel, content, queue: 'records-temp', timestamp: timestamp.valueOf()});
+
         return queueRecords(records.slice(1), totalCount, timestamp);
       }
+
+      return channel.waitForConfirms();
     }
   }
 
@@ -113,6 +124,7 @@ export default ({mongoUri, amqpUri}) => {
     const {messageCount: totalMessageCount} = await channel.assertQueue('records-temp', {durable: true});
 
     const {discardedMessageCount, forwardedMessageCount} = await handleTemporaryRecords({channel, timestamp, totalMessageCount});
+
     debug(`Forwarded ${forwardedMessageCount} messages, discarded ${discardedMessageCount}`);
 
     await channel.close();
@@ -127,7 +139,12 @@ export default ({mongoUri, amqpUri}) => {
       const messageTimestamp = moment(message.properties.timestamp);
 
       if (timestamp && timestamp.isAfter(messageTimestamp)) {
-        await sendMessage({channel, queue: 'records', content: message.content});
+        await new Promise((resolve, reject) => {
+          channel.sendToQueue('records', message.content, {persistent: true}, e => e ? reject(e) : resolve());
+        });
+
+        //await sendMessage({channel, queue: 'records', content: message.content});
+
         await channel.ack(message);
         return handleTemporaryRecords({channel, totalMessageCount, timestamp, discardedMessageCount, forwardedMessageCount: forwardedMessageCount + 1});
       }
@@ -139,13 +156,13 @@ export default ({mongoUri, amqpUri}) => {
     return {discardedMessageCount, forwardedMessageCount};
   }
 
-  function sendMessage({channel, queue, content, ...options}) {
+  /*function sendMessage({channel, queue, content, ...options}) {
     return new Promise((resolve, reject) => {
       channel.sendToQueue(queue, content, {
         ...options, persistent: true
       }, err => err ? reject(err) : resolve());
     });
-  }
+  }*/
 
   /* Async function getRecords() {
     const {timestamp: stateTimestamp} = await readState();
