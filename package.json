@@ -34,7 +34,10 @@
 		"watch:test": "cross-env DEBUG=1 NODE_ENV=test nodemon -w src -w test-fixtures --exec 'npm run test:dev'"
 	},
 	"dependencies": {
+		"@natlibfi/marc-record": "^6.0.2",
 		"amqplib": ">=0.6.0 <1.0.0",
+		"compressing": "^1.5.1",
+		"mariadb": "^2.4.2",
 		"moment": "^2.27.0",
 		"mongodb": "^3.6.0",
 		"uuid": "^8.3.0"

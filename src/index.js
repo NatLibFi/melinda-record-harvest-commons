@@ -28,8 +28,7 @@
 
 import moment from 'moment';
 import createDebugLogger from 'debug';
-import {MongoClient} from 'mongodb';
-import {connect as amqpConnect} from 'amqplib';
+import {createPool as createDbPool} from 'mariadb';
 
 export const statuses = {
   harvestPending: 'harvestPending',
@@ -38,129 +37,90 @@ export const statuses = {
   postProcessingDone: 'postProcessingDone'
 };
 
-export default ({mongoUri, amqpUri}) => {
+export default async ({db}) => {
   const debug = createDebugLogger('@natlibfi/melinda-record-harvest-commons');
+  const dbPool = await initializeDb();
 
-  return {readState, writeState, handleQueues};
+  return {readState, writeState, getPool, close};
+
+  function getPool() {
+    return dbPool;
+  }
+
+  async function close() {
+    await dbPool.end();
+  }
 
   async function readState() {
-    const {client, db} = await getMongoClient();
-    const doc = await db.collection('state').findOne({}) || {};
+    const connection = await dbPool.getConnection();
+    const [{status, timestamp, resumption_token: token, resumption_cursor: cursor} = {}] = await connection.query('SELECT * FROM state');
 
-    await client.close();
+    await connection.end();
 
     return {
-      status: statuses.harvestPending,
-      ...formatDoc(),
-      timestamp: doc.timestamp ? moment(doc.timestamp) : undefined
+      status: status || statuses.harvestPending,
+      timestamp: timestamp ? moment(timestamp) : undefined,
+      resumptionToken: token ? {token, cursor} : undefined
     };
-
-    function formatDoc() {
-      return Object.entries(doc).
-        filter(([k]) => k === '_id' === false)
-        .reduce((a, [k, v]) => ({...a, [k]: v}), {});
-    }
   }
 
-  async function writeState(state, records = []) {
-    const connection = await amqpConnect(amqpUri);
-    const channel = await connection.createConfirmChannel();
-
-    await channel.assertQueue('records', {durable: true});
-    await channel.assertQueue('records-temp', {durable: true});
-
-    await queueRecords(records.slice(), records.length);
-
-    const {messageCount: totalTempMessageCount} = await channel.checkQueue('records-temp');
-
-    const timestamp = moment();
-    const {client, db} = await getMongoClient();
-    const doc = {
-      $set: {...state, timestamp: timestamp.toDate()}
-    };
-
+  async function writeState({status, timestamp = moment(), resumptionToken = {}} = {}, records = []) {
     debug('Writing state');
-    await db.collection('state').updateOne({}, doc, {upsert: true});
-    await client.close();
+
+    const connection = await dbPool.getConnection();
 
     if (records.length > 0) {
-      debug('Requeuing temp records');
+      await connection.beginTransaction();
 
-      await handleTemporaryRecords({channel, timestamp, totalMessageCount: totalTempMessageCount});
-      const {messageCount} = await channel.checkQueue('records');
+      await connection.batch('INSERT INTO records SET id=?, record=?', records.map(({identifier, record}) => [identifier, record]));
+      await updateState();
 
-      await channel.close();
-      await connection.close();
-
-      return messageCount;
+      await connection.commit();
+      await connection.end();
+      return;
     }
 
-    await channel.close();
-    return connection.close();
+    await updateState();
+    await connection.end();
 
-    async function queueRecords(records, totalCount, timestamp = moment()) {
-      const [record] = records;
-
-      if (record) {
-        debug(`Sending record ${totalCount - records.length}/${totalCount} to temporary queue`);
-
-        const content = Buffer.from(JSON.stringify(record.toObject()));
-
-        await channel.sendToQueue('records-temp', content, {
-          persistent: true,
-          timestamp: timestamp.valueOf()
-        });
-
-        return queueRecords(records.slice(1), totalCount, timestamp);
-      }
-
-      return channel.waitForConfirms();
+    function updateState() {
+      return connection.query(`REPLACE INTO state SET
+        id=0,
+        status=?,
+        timestamp=?,
+        resumption_token=?,
+        resumption_cursor=?`, [status, timestamp.toDate(), resumptionToken.token || null, resumptionToken.cursor || null]);
     }
   }
 
-  async function handleQueues() {
-    const connection = await amqpConnect(amqpUri);
-    const channel = await connection.createConfirmChannel();
-    const {timestamp} = await readState();
+  async function initializeDb() {
+    const dbPool = createDbPool({
+      host: db.host,
+      port: db.port,
+      database: db.database,
+      user: db.username,
+      password: db.password,
+      connectionLimit: db.connectionLimit
+    });
 
-    await channel.assertQueue('records', {durable: true});
-    const {messageCount: totalMessageCount} = await channel.assertQueue('records-temp', {durable: true});
+    const connection = await dbPool.getConnection();
 
-    const {discardedMessageCount, forwardedMessageCount} = await handleTemporaryRecords({channel, timestamp, totalMessageCount});
+    await connection.query(`CREATE TABLE IF NOT EXISTS state (
+      id INT NOT NULL,
+      status ENUM('harvestPending', 'harvestDone', 'postProcessingDone') NOT NULL,
+      timestamp DATETIME NOT NULL,
+      resumption_token VARCHAR(200),
+      resumption_cursor INT,
+      PRIMARY KEY (id)
+    )`);
 
-    debug(`Forwarded ${forwardedMessageCount} messages, discarded ${discardedMessageCount}`);
+    await connection.query(`CREATE TABLE IF NOT EXISTS records (
+      id INT NOT NULL UNIQUE,
+      record JSON NOT NULL CHECK (JSON_VALID(record)),
+      PRIMARY KEY (id)
+    )`);
 
-    await channel.close();
-    return connection.close();
-  }
-
-  async function handleTemporaryRecords({channel, totalMessageCount, timestamp, forwardedMessageCount = 0, discardedMessageCount = 0}) {
-    const message = await channel.get('records-temp');
-
-    if (message) {
-      debug(`Handling message ${forwardedMessageCount + discardedMessageCount + 1}/${totalMessageCount}`);
-      const messageTimestamp = moment(message.properties.timestamp);
-
-      if (timestamp && timestamp.isAfter(messageTimestamp)) {
-        await new Promise((resolve, reject) => {
-          channel.sendToQueue('records', message.content, {persistent: true}, e => e ? reject(e) : resolve());
-        });
-
-        await channel.ack(message);
-        return handleTemporaryRecords({channel, totalMessageCount, timestamp, discardedMessageCount, forwardedMessageCount: forwardedMessageCount + 1});
-      }
-
-      await channel.ack(message);
-      return handleTemporaryRecords({channel, totalMessageCount, timestamp, forwardedMessageCount, discardedMessageCount: discardedMessageCount + 1});
-    }
-
-    return {discardedMessageCount, forwardedMessageCount};
-  }
-
-  async function getMongoClient() {
-    const client = new MongoClient(mongoUri, {useUnifiedTopology: true});
-    await client.connect();
-    const db = client.db();
-    return {client, db};
+    await connection.end();
+    return dbPool;
   }
 };
