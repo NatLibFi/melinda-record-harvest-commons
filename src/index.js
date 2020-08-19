@@ -64,7 +64,7 @@ export default async ({db}) => {
     };
   }
 
-  async function writeState({status, timestamp = moment(), resumptionToken = {}} = {}, records = []) {
+  async function writeState({status, error, timestamp = moment(), resumptionToken = {}} = {}, records = []) {
     debug('Writing state');
 
     const connection = await dbPool.getConnection();
@@ -72,7 +72,7 @@ export default async ({db}) => {
     if (records.length > 0) {
       await connection.beginTransaction();
 
-      await connection.batch('INSERT INTO records SET id=?, record=?', records.map(({identifier, record}) => [identifier, record]));
+      await insertRecords();
       await updateState();
 
       await connection.commit();
@@ -84,12 +84,37 @@ export default async ({db}) => {
     await connection.end();
 
     function updateState() {
+      const parameters = [
+        status,
+        timestamp.toDate(),
+        resumptionToken.token || null,
+        resumptionToken.cursor || null,
+        error || null
+      ];
+
       return connection.query(`REPLACE INTO state SET
         id=0,
         status=?,
         timestamp=?,
         resumption_token=?,
-        resumption_cursor=?`, [status, timestamp.toDate(), resumptionToken.token || null, resumptionToken.cursor || null]);
+        resumption_cursor=?,
+        error=?`, parameters);
+    }
+
+    async function insertRecords() {
+      // This returns a SQL error for some reason if the number of inserts is too long. So far can only be reproduced with the exact same payload so not filing a bug. Yet.
+      //await connection.batch('INSERT INTO records SET id=?, record=?', records.map(({identifier, record}) => [identifier, record]));
+
+      if (records.length > 500) {
+        await connection.batch('INSERT INTO records SET id=?, record=?', records.slice(0, 500).map(toValues));
+        return connection.batch('INSERT INTO records SET id=?, record=?', records.slice(500).map(toValues));
+      }
+
+      return connection.batch('INSERT INTO records SET id=?, record=?', records.map(toValues));
+
+      function toValues({identifier, record}) {
+        return [identifier, record];
+      }
     }
   }
 
@@ -107,16 +132,17 @@ export default async ({db}) => {
 
     await connection.query(`CREATE TABLE IF NOT EXISTS state (
       id INT NOT NULL,
-      status ENUM('harvestPending', 'harvestDone', 'postProcessingDone') NOT NULL,
+      status ENUM('harvestPending', 'harvestDone', 'harvestError', 'postProcessingDone') NOT NULL,
       timestamp DATETIME NOT NULL,
       resumption_token VARCHAR(200),
       resumption_cursor INT,
+      error TEXT,
       PRIMARY KEY (id)
     )`);
 
     await connection.query(`CREATE TABLE IF NOT EXISTS records (
       id INT NOT NULL UNIQUE,
-      record JSON NOT NULL CHECK (JSON_VALID(record)),
+      record JSON NOT NULL,
       PRIMARY KEY (id)
     )`);
 
