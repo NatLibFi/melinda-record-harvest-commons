@@ -73,7 +73,7 @@ export default async ({db}) => {
     if (records.length > 0) {
       await connection.beginTransaction();
 
-      await connection.batch('INSERT INTO records VALUES(?,?)', records.map(({identifier, record}) => [identifier, record]));
+      await insertRecords(records);
       await updateState();
 
       await connection.commit();
@@ -93,6 +93,18 @@ export default async ({db}) => {
         error || null
       ]);
     }
+
+    // With Bulk protocol, some payloads cause a SQL error for some reason. So far can only be reproduced with certain payloads so can't really file a bug
+    // Then then alternative bulk rewrite seems to rewrite into incorrect SQL queries. Reverting to manually batched multi-values queries...
+    async function insertRecords(records) {
+      const chunk = records.slice(0, 5);
+
+      if (chunk.length > 0) {
+        const values = chunk.map(({identifier, record}) => [identifier, record]).flat();
+        await connection.query('INSERT INTO records VALUES (?,?), (?,?), (?,?), (?,?), (?, ?)', values);
+        return insertRecords(records.slice(5));
+      }
+    }
   }
 
   async function initializeDb() {
@@ -102,9 +114,7 @@ export default async ({db}) => {
       database: db.database,
       user: db.username,
       password: db.password,
-      connectionLimit: db.connectionLimit,
-      // With Bulk protocol, some payloads cause a SQL error for some reason. So far can only be reproduced with the exact same payload so not filing a bug
-      bulk: false
+      connectionLimit: db.connectionLimit
     });
 
     const connection = await dbPool.getConnection();
