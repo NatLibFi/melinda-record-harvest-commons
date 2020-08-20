@@ -14,7 +14,7 @@
 		"url": "git@github.com:natlibfi/melinda-record-harvest-commons-js.git"
 	},
 	"license": "LGPL-3.0+",
-	"version": "1.0.0-alpha.10",
+	"version": "1.0.0-alpha.11",
 	"main": "./dist/index.js",
 	"engines": {
 		"node": ">=12"
