@@ -101,7 +101,7 @@ export default async ({db}) => {
 
       if (chunk.length > 0) {
         const values = chunk.map(({identifier, record}) => [identifier, record]).flat();
-        await connection.query(`INSERT INTO records VALUES ${generatePlaceholders(values.length)}`, values); // ignore: node_sqli_injection
+        await connection.query(`INSERT INTO records VALUES ${generatePlaceholders(chunk.length)}`, values); // ignore: node_sqli_injection
         return insertRecords(records.slice(5));
       }
 
