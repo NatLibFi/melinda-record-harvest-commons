@@ -101,8 +101,12 @@ export default async ({db}) => {
 
       if (chunk.length > 0) {
         const values = chunk.map(({identifier, record}) => [identifier, record]).flat();
-        await connection.query('INSERT INTO records VALUES (?,?), (?,?), (?,?), (?,?), (?, ?)', values);
+        await connection.query(`INSERT INTO records VALUES ${generatePlaceholders(values.length)}`, values);
         return insertRecords(records.slice(5));
+      }
+
+      function generatePlaceholders(count) {
+        return Array.from(Array(count)).map(() => '(?,?)').join(', ');
       }
     }
   }
