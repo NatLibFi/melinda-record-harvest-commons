@@ -53,11 +53,12 @@ export default async ({db}) => {
 
   async function readState() {
     const connection = await dbPool.getConnection();
-    const [{status, timestamp, resumption_token: token, resumption_cursor: cursor} = {}] = await connection.query('SELECT * FROM state');
+    const [{status, timestamp, error, resumption_token: token, resumption_cursor: cursor} = {}] = await connection.query('SELECT * FROM state');
 
     await connection.end();
 
     return {
+      error,
       status: status || statuses.harvestPending,
       timestamp: timestamp ? moment(timestamp) : undefined,
       resumptionToken: token ? {token, cursor} : undefined
@@ -72,7 +73,7 @@ export default async ({db}) => {
     if (records.length > 0) {
       await connection.beginTransaction();
 
-      await insertRecords();
+      await connection.batch('INSERT INTO records VALUES(?,?)', records.map(({identifier, record}) => [identifier, record]));
       await updateState();
 
       await connection.commit();
@@ -84,37 +85,13 @@ export default async ({db}) => {
     await connection.end();
 
     function updateState() {
-      const parameters = [
+      return connection.query(`REPLACE INTO state VALUES(0,?,?,?,?,?)`, [
         status,
         timestamp.toDate(),
         resumptionToken.token || null,
         resumptionToken.cursor || null,
         error || null
-      ];
-
-      return connection.query(`REPLACE INTO state SET
-        id=0,
-        status=?,
-        timestamp=?,
-        resumption_token=?,
-        resumption_cursor=?,
-        error=?`, parameters);
-    }
-
-    async function insertRecords() {
-      // This returns a SQL error for some reason if the number of inserts is too long. So far can only be reproduced with the exact same payload so not filing a bug. Yet.
-      //await connection.batch('INSERT INTO records SET id=?, record=?', records.map(({identifier, record}) => [identifier, record]));
-
-      if (records.length > 500) {
-        await connection.batch('INSERT INTO records SET id=?, record=?', records.slice(0, 500).map(toValues));
-        return connection.batch('INSERT INTO records SET id=?, record=?', records.slice(500).map(toValues));
-      }
-
-      return connection.batch('INSERT INTO records SET id=?, record=?', records.map(toValues));
-
-      function toValues({identifier, record}) {
-        return [identifier, record];
-      }
+      ]);
     }
   }
 
@@ -125,7 +102,9 @@ export default async ({db}) => {
       database: db.database,
       user: db.username,
       password: db.password,
-      connectionLimit: db.connectionLimit
+      connectionLimit: db.connectionLimit,
+      // With Bulk protocol, some payloads cause a SQL error for some reason. So far can only be reproduced with the exact same payload so not filing a bug
+      bulk: false
     });
 
     const connection = await dbPool.getConnection();
