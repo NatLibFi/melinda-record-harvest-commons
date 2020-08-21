@@ -38,11 +38,10 @@ steps:
       - npm run build
       - NPM_CONFIG_IGNORE_SCRIPTS=true npm ci --production
 
-  # https://github.com/ajinabraham/njsscan/issues/24
-  #- name: static-security-scan
-  #  image: quay.io/natlibfi/njsscan
-  #  commands:
-  #    - njsscan dist
+  - name: static-security-scan
+    image: quay.io/natlibfi/njsscan
+    commands:
+      - njsscan dist
 
   - name: npm
     image: plugins/npm
