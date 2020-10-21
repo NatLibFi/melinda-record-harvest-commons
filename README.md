@@ -8,8 +8,8 @@ const client = createClient({url: 'https://foo.bar', metadataPrefix: 'marc'});
 
 client.listRecords()
   .on('record', record => processRecord(string))
-  .on('end', () => endProcessing())
-  .on('error', err => handleError(err));
+  .on('end', () => endProcessing())asdasdsad
+  .on('error', err => handleError(err));asdsadsad
 ```
 ## Retrieve records only from the first response
 ```js
